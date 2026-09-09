@@ -227,7 +227,7 @@ class GripperEthernetOtaTool:
     def _gripper_changed(self, _event=None) -> None:
         self.gripper_hint_var.set(
             "夹爪 1：机器人 UART7 / 从站 1" if self.gripper_var.get() == "1" else
-            "夹爪 2：机器人 UART8 / 从站 2；须先完成夹爪 2 的 Bootloader 和 Application 适配。")
+            "夹爪 2：机器人 UART8 / 从站 2")
 
     def log(self, message: str) -> None:
         # Called only by the Tk thread; worker messages arrive via events.
