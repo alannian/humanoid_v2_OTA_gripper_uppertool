@@ -197,7 +197,7 @@ class GripperEthernetOtaTool:
             row=2, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Label(firmware, textvariable=self.image_info_var).grid(
             row=3, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Label(firmware, text="版本号须与 BIN 内版本一致；当前仓库夹爪 1 固件为 1.15.0。").grid(
+        ttk.Label(firmware, text="版本号须与 BIN 内版本一致；当前夹爪 1/2 均为 1.15.0，请分别选择对应 BIN。").grid(
             row=4, column=0, columnspan=2, sticky="w")
 
         actions = ttk.Frame(outer)

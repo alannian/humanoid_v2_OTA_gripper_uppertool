@@ -12,6 +12,7 @@ import gripper_ota_tcp_tool as tool
 
 
 IMAGE_PATH = Path(__file__).parents[2] / "gripper-program" / "OTA_PC_Tool" / "gripper1_app.bin"
+IMAGE2_PATH = IMAGE_PATH.with_name("gripper2_app.bin")
 
 
 class RobotReplies:
@@ -87,10 +88,11 @@ def update_args():
 
 class ToolTests(unittest.TestCase):
     def test_current_gripper_bin(self):
-        path = Path(__file__).parents[2] / "gripper-program" / "OTA_PC_Tool" / "gripper1_app.bin"
-        image = tool.load_and_validate_image(path)
-        self.assertLessEqual(image.size, tool.APP_SIZE)
-        self.assertEqual(image.crc32, tool.zlib.crc32(image.data) & 0xFFFFFFFF)
+        for path in (IMAGE_PATH, IMAGE2_PATH):
+            with self.subTest(path=path.name):
+                image = tool.load_and_validate_image(path)
+                self.assertLessEqual(image.size, tool.APP_SIZE)
+                self.assertEqual(image.crc32, tool.zlib.crc32(image.data) & 0xFFFFFFFF)
 
     def test_max_data_json_fits_robot_rx_pool(self):
         payload = {
@@ -122,11 +124,12 @@ class ToolTests(unittest.TestCase):
         progress = []
         phases = []
         args = update_args()
+        args.bin = IMAGE2_PATH
         args.gripper = 2  # Selection must reach START/role and BOOT_OK validation.
         result = tool.update(robot, args, log=lambda _: None,
                              progress=lambda done, total: progress.append((done, total)),
                              phase=phases.append)
-        self.assertEqual(robot.image, IMAGE_PATH.read_bytes())
+        self.assertEqual(robot.image, IMAGE2_PATH.read_bytes())
         self.assertEqual(robot.start["gripper_id"], 2)
         self.assertEqual(robot.start["role"], 2)
         self.assertEqual(result["gripper_id"], 2)
