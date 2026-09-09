@@ -23,7 +23,7 @@ Flash 后，主控才向本工具回复 `gripper_ota_ack`；主控不会把完�
 1. 机器人主控烧录了包含 `gripper_ota_manager` 和
    `gripper_boot_transport` 的新固件。
    本轮回包修复还包含 `ota_net_reply.c`；必须重新编译并烧录H723 Application，
-   连接日志中的转发固件标识应为 `20260908-net2`，具体检查见5.2节。
+   当前还包含OTA后单位恢复，连接标识应为 `20260909-unit1`；先看5.3节。
 2. 目标夹爪已经烧录 `Bootloader_G431`。
 3. 夹爪当前 Application 支持 `0x00F0/0x00F1/0x00F2` 三个 OTA
    切换寄存器。夹爪1当前工程已支持；夹爪2必须完成同样适配后才能从
@@ -153,7 +153,9 @@ python .\gripper_ota_tcp_tool.py --bin "D:\固件\gripper1_app.bin" --gripper 1 
    VALID Metadata 已提交。
 6. 主控命令夹爪复位，再通过普通 Modbus 实读 `DEV_ID`、固件版本、
    Bootloader版本、Application READY、布局版本和 role。
-7. 只有读值与目标完全一致，主控才返回 `gripper_ota_boot_ok` 并退出维护态。
+7. 读值一致后进入 `RESTORE_CONTROL`：确认失能、设置MIT和毫度单位，读回
+   `MODE=0`、`ENABLE=0`、`UNIT_CFG=0x000B` 后才返回 `gripper_ota_boot_ok` 并退出维护态。
+   不自动运动，等待新的开合度命令；不写零点或其它校准数据。
 
 屏幕出现“Application x.y.z 已运行”才是完整成功；仅看到数据发送100%或
 `gripper_ota_result`，还不能证明新 Application 已经启动。
@@ -317,21 +319,77 @@ update 并发送完整 BIN，不能恢复普通夹爪控制或反复断电碰运
 `cmd_seen/cmd_done`统计所有网络命令，不仅是OTA；回执在命令处理前产生，单条回执
 里的旧计数不能直接判定任务卡死。`reply_full/tx_failed`是累计计数，需比较变化。
 
+### 5.3 OTA后开合度异常：单位恢复修复（20260909-unit1）
+
+已确认的源码问题：H723启动时设定位置单位为毫度（0x0014=0x000B），而G431
+Application重启默认0x000F，位置按度解释。旧OTA流程只检查版本/READY，没有重做
+单位配置；主控仍发送-35000时就会被解释为-35000°，而不是-35°，后续坐标转换、
+限位或保护可能使运动异常。不能把这一现象直接当成校准页被擦除。
+
+本轮主控增加 `ArmEnd_RestoreControlUnits()`：在维护态中最多尝试3次，先发送失能并
+读回确认，再配置MIT和0x000B，最后连续读取0x0011～0x0014确认MODE/ENABLE/UNIT_CFG。
+普通WriteSingle只代表发送成功，不能代替这一步读回。总线锁覆盖整个恢复步骤。
+不调用会自动开爪的 `ArmEnd_Init()`，不清安全锁存，不发送Goal或ENABLE=1，不写
+0x0016/0x0017或Flash校准页，也不批量重写0x0036参数块。此次只恢复模式和单位，
+不是通用的全部运行参数备份/恢复，也不将 `control_ready` 当作校准或运动精度合格证明。
+
+完成回复新增：
+
+```json
+{"topic":"gripper_ota_boot_ok","app_ready":true,"control_ready":true,"previous_unit_cfg":15,"unit_cfg":11,"mode":0,"motor_enabled":false}
+```
+
+上例省略会话/版本等字段；15=0x000F，11=0x000B。恢复前读不到单位时previous_unit_cfg
+为65535，不影响最后必须读回确认。工具会显示：
+
+```text
+RESTORE_CONTROL
+控制单位恢复：UNIT_CFG 0x000F → 0x000B；MIT模式，电机保持失能。
+升级完成：夹爪1 Application 1.15.0 已运行；等待新的运动命令。
+```
+
+新工具在START前要求QUERY返回 `control_restore_supported:true`，旧主控不会被允许
+继续升级；收到BOOT_OK时还必须验证control_ready、unit_cfg、mode和motor_enabled。
+因此必须同时更新H723 Application和实际运行电脑上的两个Python文件。
+
+若 `RESTORE_CONTROL` 失败：固件可以已成功写入，但主控保留维护态，返回错误25。
+QUERY报告 `control_restore_pending:true`；工具的错误处理会尝试CANCEL，此时CANCEL
+只重试失能/模式/单位恢复，不擦除固件、不再发送Bootloader ABORT。仍失败则检查
+RS485后点击“取消当前会话”重试。恢复成功保持电机失能；本次升级操作仍显示原错误，
+请查询确认IDLE后再操作，不应把错误弹窗误解为固件必定损坏或立即重刷BIN。
+擦除前取消、旧Application重启的路径也已补充单位恢复；擦除中断的原恢复策略不变。
+
+实机验证流程：
+
+1. 保留现有校准备份；按已验证的烧录/启动流程更新H723实际运行槽的Application。
+   没有新增Keil地址或Flash算法配置，不要因此整片擦除或反复重刷Bootloader；若
+   曾做主控OTA，要同时核对其启动配置/CRC，确认实际运行新版本。
+2. 更新Linux/Windows工具目录并重启，确认连接标识 `20260909-unit1`。
+3. 选择原来同一夹爪1 BIN和正确版本执行升级，不必先更新G431 Bootloader。
+4. 确认日志有RESTORE_CONTROL、UNIT_CFG=0x000B和失能确认，升级成功后不应自动开合。
+5. 保证周围安全、夹爪空载，使用机器人原控制工具发一条新的低速开合度命令。
+   当前主控映射保持不变：100→-35000（-35°）、50→-15000（-15°）、0→5000（5°）。
+   不要改映射方向或重新标定来掩盖单位错误；实际机械位置仍需根据反馈验证。
+6. 若单位已确认但运动仍异常，停止运动，读取校准有效标志0x0018、加载的零点/比例
+   0x0019～0x001B、安全状态及AS反馈继续定位；此次没有将其它力矩参数或校准有效性
+   加入成功判据，不应保证所有运动异常都会由单位修复解决。
+
 ## 6. 开发自检
 
 ```powershell
 python -m unittest -v .\test_gripper_ota_tcp_tool.py
 ```
 
-2026-09-09 共17项测试通过，覆盖当前夹爪 BIN 的布局/CRC、1 KiB接收限制、
+2026-09-09 共21项测试通过，覆盖当前夹爪 BIN 的布局/CRC、1 KiB接收限制、
 TCP粘包/拆包、ACK丢失重传与迟到ACK、进度回调、取消、缺少Application READY
 时禁止报成功，以及本机回环TCP模拟完整升级后继续查询。界面测试创建隐藏的
 Tk窗口，检查夹爪/文件选择传参和升级期间按钮锁定、结束后恢复。
 新增测试确认主控不回复QUERY时不发送START/CANCEL、超时区分无数据与普通遥测，
 并确认诊断日志不会随周期遥测反复刷屏。本轮还覆盖6366条遥测夹杂查询回执及
 状态回复、接收拒绝提示、固件/任务诊断分层、新查询清除旧回执，以及错误弹窗
-出现前按钮恢复和长日志截短。
+出现前按钮恢复和长日志截短。单位修复新增：旧主控在START前拒绝、错误单位/
+使能状态/模式/缺少控制确认时禁止报告成功、恢复未完成时不重复擦除，以及恢复日志。
 
 这些测试是PC侧模拟/回环和界面测试，不是主控RTOS队列压力测试，也不连接真实机器人。
 H723两个Target另行经过Keil编译检查；本轮必须更新H723 Application和PC工具，
-G431固件保持不变。完整硬件链路仍须按5.2节进行实机验证。
+G431固件保持不变。完整硬件链路仍须按5.3节进行实机验证。

@@ -281,7 +281,7 @@ def query_failure_hint(conn: JsonFrameSocket) -> str:
         return (f"已确认运行Slot {peer.get('running_slot')} / {peer.get('relay_rev')}，"
                 "但未收到查询的接收回执；重点检查主控TCP接收、JSON分帧及接收回调。")
     return ("未收到新固件robot_ota_link标识或查询回执；"
-            "请核对实际运行槽位及是否烧录20260908-net2版本，不能只凭TCP连接确认固件版本。")
+            "请核对实际运行槽位及是否烧录20260909-unit1版本，不能只凭TCP连接确认固件版本。")
 
 
 def query_status(conn: JsonFrameSocket, *, log: Callable[[str], None] = print,
@@ -404,6 +404,10 @@ def update(conn: JsonFrameSocket, args: argparse.Namespace, *,
             phase("checking")
         log("[0/4] 检查主控夹爪OTA命令/回复链路（此时不发送START）...")
         status = query_status(conn, log=log, should_cancel=should_cancel)
+        if status.get("control_restore_supported") is not True:
+            raise RuntimeError("主控未确认支持OTA后单位恢复；请先烧录20260909-unit1或兼容版本，再升级夹爪。")
+        if status.get("control_restore_pending") is True:
+            raise RuntimeError("固件已写入，但控制单位尚未恢复；请点击取消当前会话重试配置，不必重新擦写固件。")
         state = status["state"]
         if state != "IDLE" and not (
                 state == "RECOVERY_REQUIRED" and status.get("gripper_id") == args.gripper):
@@ -445,13 +449,18 @@ def update(conn: JsonFrameSocket, args: argparse.Namespace, *,
 
         if phase is not None:
             phase("rebooting")
-        log("[4/4] 等待新Application启动并由主控实读版本/READY ...")
+        log("[4/4] 等待新Application启动、主控恢复毫度单位并读回确认失能状态 ...")
         boot = wait_topic(conn, {"gripper_ota_boot_ok"}, args.boot_timeout,
                           session_id=session_id)
         if (boot.get("gripper_id") != args.gripper or
-                boot.get("version") != version_text or boot.get("app_ready") is not True):
+                boot.get("version") != version_text or boot.get("app_ready") is not True or
+                boot.get("control_ready") is not True or boot.get("unit_cfg") != 0x000B or
+                boot.get("mode") != 0 or boot.get("motor_enabled") is not False):
             raise RuntimeError(f"BOOT_OK内容不匹配：{boot}")
-        log(f"升级完成：夹爪{args.gripper} Application {boot.get('version')} 已运行")
+        previous = boot.get("previous_unit_cfg")
+        previous_text = f"0x{previous:04X}" if isinstance(previous, int) and previous != 0xFFFF else "未读到"
+        log(f"控制单位恢复：UNIT_CFG {previous_text} → 0x000B；MIT模式，电机保持失能。")
+        log(f"升级完成：夹爪{args.gripper} Application {boot.get('version')} 已运行；等待新的运动命令。")
         return boot
     except BaseException:
         if start_sent:
@@ -465,7 +474,11 @@ def update(conn: JsonFrameSocket, args: argparse.Namespace, *,
                     "已请求取消；"
                     f"recovery_required={cancelled.get('recovery_required')}"
                 )
-                if cancelled.get("recovery_required"):
+                if cancelled.get("control_restore_pending"):
+                    log("固件已校验；控制配置仍未恢复，保持维护态，可重试取消会话以恢复配置，无需立即重刷BIN。")
+                elif cancelled.get("control_ready"):
+                    log("控制配置重试已通过，电机保持失能；请先查询状态，再按正常流程发送新命令。")
+                elif cancelled.get("recovery_required"):
                     log("Application可能已擦除：机器人必须保持维护态，请重新发送完整固件。")
             except Exception as cancel_error:
                 log(f"取消未确认：{cancel_error}。请重连后查询会话状态，必要时重发完整BIN。")

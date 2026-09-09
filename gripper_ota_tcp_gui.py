@@ -117,7 +117,7 @@ class GripperEthernetOtaTool:
         "preparing": "1/4 进入维护态、准备夹爪 Bootloader",
         "streaming": "2/4 正在传输，等待夹爪确认写入",
         "verifying": "3/4 数据已发送，等待整包校验",
-        "rebooting": "4/4 等待新 Application 启动确认",
+        "rebooting": "4/4 等待新 Application 启动、单位恢复与失能读回确认",
         "cancelling": "正在取消，等待主控确认恢复状态",
     }
 
@@ -348,7 +348,7 @@ class GripperEthernetOtaTool:
         else:
             result = outcome.get("result", {})
             if outcome["action"] == "update":
-                self.stage_var.set(f"升级成功：夹爪 {result['gripper_id']} / {result['version']} 已运行")
+                self.stage_var.set(f"升级成功：夹爪 {result['gripper_id']} / {result['version']}，毫度单位已确认，等待新命令")
                 if not self.close_pending:
                     messagebox.showinfo("升级成功", self.stage_var.get(), parent=self.root)
             elif result.get("recovery_required"):

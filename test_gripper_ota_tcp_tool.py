@@ -31,7 +31,8 @@ class RobotReplies:
         self.requests.append(obj.copy())
         topic = obj["topic"]
         if topic == "gripper_ota_query":
-            self.pending.append({"topic": "gripper_ota_status", "state": "IDLE", "recovery_required": False})
+            self.pending.append({"topic": "gripper_ota_status", "state": "IDLE", "recovery_required": False,
+                                 "control_restore_supported": True})
         elif topic == "gripper_ota_start":
             self.start = obj
             self.pending.append({"topic": "gripper_ota_ready", "session_id": obj["session_id"],
@@ -62,7 +63,8 @@ class RobotReplies:
                  "gripper_id": self.start["gripper_id"], "ok": True},
                 {"topic": "gripper_ota_boot_ok", "session_id": obj["session_id"],
                  "gripper_id": self.start["gripper_id"], "version": self.start["version"],
-                 "app_ready": self.boot_ready},
+                 "app_ready": self.boot_ready, "control_ready": True,
+                 "previous_unit_cfg": 15, "unit_cfg": 11, "mode": 0, "motor_enabled": False},
             ])
         elif topic == "gripper_ota_cancel":
             self.pending.append({"topic": "gripper_ota_cancelled", "ok": True,
@@ -141,6 +143,48 @@ class ToolTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "BOOT_OK"):
             tool.update(robot, update_args(), log=lambda _: None)
         self.assertEqual(robot.requests[-1]["topic"], "gripper_ota_cancel")
+
+    def test_legacy_main_firmware_is_rejected_before_start(self):
+        class LegacyRobot(RobotReplies):
+            def send_json(self, obj):
+                super().send_json(obj)
+                if obj["topic"] == "gripper_ota_query":
+                    self.pending[-1].pop("control_restore_supported")
+        robot = LegacyRobot()
+        with self.assertRaisesRegex(RuntimeError, "主控未确认支持OTA后单位恢复"):
+            tool.update(robot, update_args(), log=lambda _: None)
+        self.assertEqual([r["topic"] for r in robot.requests], ["gripper_ota_query"])
+
+    def test_wrong_unit_enabled_or_unconfirmed_control_never_reports_success(self):
+        for changed in ({"unit_cfg": 15}, {"control_ready": False},
+                        {"motor_enabled": True}, {"mode": 1}, {"control_ready": None}):
+            with self.subTest(changed=changed):
+                class BadControlRobot(RobotReplies):
+                    def send_json(self, obj):
+                        super().send_json(obj)
+                        if obj["topic"] == "gripper_ota_end":
+                            self.pending[-1].update(changed)
+                robot = BadControlRobot()
+                with self.assertRaisesRegex(RuntimeError, "BOOT_OK"):
+                    tool.update(robot, update_args(), log=lambda _: None)
+
+    def test_pending_control_recovery_does_not_erase_again(self):
+        class PendingRobot(RobotReplies):
+            def send_json(self, obj):
+                super().send_json(obj)
+                if obj["topic"] == "gripper_ota_query":
+                    self.pending[-1].update(state="RECOVERY_REQUIRED", gripper_id=1,
+                                            control_restore_pending=True)
+        robot = PendingRobot()
+        with self.assertRaisesRegex(RuntimeError, "不必重新擦写固件"):
+            tool.update(robot, update_args(), log=lambda _: None)
+        self.assertEqual(len(robot.requests), 1)
+
+    def test_control_restore_result_is_logged(self):
+        logs = []
+        tool.update(RobotReplies(), update_args(), log=logs.append)
+        self.assertTrue(any("0x000F → 0x000B" in line for line in logs))
+        self.assertTrue(any("电机保持失能" in line for line in logs))
 
     def test_cancel_stops_next_data_and_waits_for_cancel_ack(self):
         robot = RobotReplies()
